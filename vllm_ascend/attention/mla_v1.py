@@ -961,7 +961,7 @@ class AscendMLAImpl(MLAAttentionImpl):
         decode_meta = attn_metadata.decode
         assert decode_meta is not None
         num_tokens = q_nope.size(0)
-        if self.running_in_graph:
+        if self.running_in_graph or self.running_chunkprefilll_with_torchair:
             # TorchAir's shape is [bs, num_heads_per_rank, q_seq_len, dim]
             if attn_metadata.attn_state == AscendAttentionState.SpecDecoding:
                 assert num_tokens % self.spec_token_num == 0
@@ -1077,6 +1077,7 @@ class AscendMLAImpl(MLAAttentionImpl):
         self.running_in_graph = self.torchair_graph_enabled and attn_metadata.attn_state in [
             AscendAttentionState.DecodeOnly, AscendAttentionState.SpecDecoding
         ]
+        self.running_chunkprefilll_with_torchair = self.torchair_graph_enabled and attn_metadata.attn_state == AscendAttentionState.ChunkedPrefill
         num_actual_toks = attn_metadata.num_actual_tokens
         if k_pe is None and not self.running_in_graph:
             if not self.torchair_graph_enabled:
@@ -1096,13 +1097,13 @@ class AscendMLAImpl(MLAAttentionImpl):
             # Inputs and outputs may be padded for CUDA graphs
             output_padded = output
             output = output[:num_actual_toks, ...]
-            if not self.torchair_graph_enabled:
+            if not self.torchair_graph_enabled or self.running_chunkprefilll_with_torchair:
                 kv_c_normed = kv_c_normed[:num_actual_toks, ...]
                 prefill_k_c_normed = kv_c_normed[num_decode_tokens:]
         if not self.running_in_graph:
             hidden_states_or_q_c = hidden_states_or_q_c[:num_actual_toks, ...]
             prefill_hs_or_q_c = hidden_states_or_q_c[num_decode_tokens:]
-            if not self.torchair_graph_enabled:
+            if not self.torchair_graph_enabled or self.running_chunkprefilll_with_torchair:
                 decode_hs_or_q_c = hidden_states_or_q_c[:num_decode_tokens]
                 k_pe = k_pe[:num_actual_toks, ...]
                 k_pe = k_pe.unsqueeze(1)
@@ -1113,18 +1114,25 @@ class AscendMLAImpl(MLAAttentionImpl):
         if has_decode:
             decode_k_nope = None
             assert attn_metadata.decode is not None
-            if self.running_in_graph:
+            if self.running_in_graph or self.running_chunkprefilll_with_torchair:
                 cos = attn_metadata.decode.cos
                 sin = attn_metadata.decode.sin
-                with npu_stream_switch("mla_secondary",
-                                       0,
-                                       enabled=enable_multistream_mla):
-                    npu_wait_tensor(hidden_states_or_kv_c_normed,
-                                    ckq,
-                                    enabled=enable_multistream_mla)
+                if self.running_chunkprefilll_with_torchair:
+                    decode_hs = (
+                        hidden_states_or_kv_c_normed[:num_decode_tokens])
+                    slots = attn_metadata.slot_mapping[:num_decode_tokens]
                     decode_k_pe, decode_k_nope, decode_kv = self.exec_kv(
-                        hidden_states_or_kv_c_normed, cos, sin, kv_cache,
-                        attn_metadata.slot_mapping)
+                        decode_hs, cos, sin, kv_cache, slots)
+                else:
+                    with npu_stream_switch("mla_secondary",
+                                           0,
+                                           enabled=enable_multistream_mla):
+                        npu_wait_tensor(hidden_states_or_kv_c_normed,
+                                        ckq,
+                                        enabled=enable_multistream_mla)
+                        decode_k_pe, decode_k_nope, decode_kv = self.exec_kv(
+                            hidden_states_or_kv_c_normed, cos, sin, kv_cache,
+                            attn_metadata.slot_mapping)
                 # Without explicitly controlling the order, IndexByTensor operations
                 # would be placed after `matmul W_KV_T` hindering the overlapping of
                 # KvRmsNormRopeCache and SingleRope.
@@ -1148,6 +1156,8 @@ class AscendMLAImpl(MLAAttentionImpl):
                                     decode_k_pe,
                                     enabled=enable_multistream_mla)
                     decode_q_pe = self.rope_single(decode_q_pe, cos, sin)
+            elif self.running_chunkprefilll_with_torchair:
+                decode_q_pe = self.rope_single(decode_q_pe, cos, sin)
             else:
                 decode_q_pe[...], decode_k_pe[...] = self.rotary_emb(
                     attn_metadata.decode.input_positions,
@@ -1166,9 +1176,10 @@ class AscendMLAImpl(MLAAttentionImpl):
                 sin = attn_metadata.prefill.sin
 
                 prefill_q_pe = self.rope_single(prefill_q_pe, cos, sin)
+                prefill_hs = hidden_states_or_kv_c_normed[num_decode_tokens:]
                 prefill_k_pe, prefill_k_nope = self.exec_kv_prefill(
-                    hidden_states_or_kv_c_normed, cos, sin, kv_cache,
-                    attn_metadata.slot_mapping)
+                    prefill_hs, cos, sin, kv_cache,
+                    attn_metadata.slot_mapping[num_decode_tokens:])
 
                 kv_c_normed = prefill_k_nope[:num_actual_toks, ...]
                 prefill_k_c_normed = prefill_k_nope[num_decode_tokens:]
@@ -1186,9 +1197,8 @@ class AscendMLAImpl(MLAAttentionImpl):
             kv_cache
         ) > 1, "the number of kv cache should be greater than 1, namely (nope_cache and rope_cache)"
         if self.torchair_graph_enabled:
-            if kv_cache[0].numel(
-            ) > 0 and attn_metadata.attn_state == AscendAttentionState.PrefillNoCache:
-                slots = attn_metadata.slot_mapping
+            if kv_cache[0].numel() > 0 and has_prefill:
+                slots = attn_metadata.slot_mapping[num_decode_tokens:]
                 # NOTE: Separate the kv cache in advance to avoid OOM or other issues
                 torch_npu._npu_reshape_and_cache(key=kv_c_normed.view(
                     num_tokens, self.num_kv_heads, -1),
