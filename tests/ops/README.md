@@ -1,0 +1,115 @@
+# 自定义算子测试框架 (OpTests)
+
+一个专业的深度学习算子精度测试和性能基准测试框架，支持Ascend NPU和精度类型，提供统一的测试接口和详细的性能分析。
+
+## 🎯 项目目标
+
+- **精度控制**: 确保自定义算子在不同精度下的计算准确性
+- **性能基准**: 对重要算子的不同实现进行全面的性能对比测试
+- **多设备支持**: 统一的测试框架支持CPU、NPU等多种计算设备
+- **标准化测试**: 提供标准化的测试流程和结果输出格式
+
+## ✨ 主要特性
+
+### 🔍 精度测试
+- 支持多种精度类型：FP16、BF16、FP32、INT8
+- 自动计算精度指标：绝对误差、相对误差、余弦相似度
+- 与CPU参考实现对比验证
+- 详细的精度分析报告
+
+### ⚡ 性能测试
+- 多种性能指标：延迟、吞吐量、内存使用
+- 支持不同算子实现的性能对比
+- 集成Profiler进行深度性能分析
+- 自动生成性能基准报告
+
+### 🔧 框架特性
+- 统一的算子测试接口
+- 可扩展的算子注册机制
+- 灵活的测试配置
+- 结构化的结果输出（JSON、CSV）
+- 自动化测试脚本
+
+## 📁 项目结构
+
+```
+OpTests/
+├── README.md                    # 项目说明文档
+├── operator_test_framework.py   # 核心测试框架
+├── run_tests.sh                 # 测试运行脚本
+│
+├── tests/                       # 测试套件
+│   ├── __init__.py
+│   ├── base_test_suite.py      # 测试套件基类
+│   ├── test_add.py             # Add算子测试
+│   ├── test_groupgemm.py       # GroupGemm算子测试
+│   ├── test_linear.py          # Linear算子测试
+│   └── test_paged_attention.py # PagedAttention算子测试
+│
+├── add/                         # Add算子实现
+│   └── add_operator.py
+│
+├── linear/                      # Linear算子实现
+│   └── linear_operator.py
+│
+├── groupgemm/                   # GroupGemm算子实现
+│   ├── base_groupgemm.py
+│   ├── groupgemm_bf16.py
+│   └── groupgemm_int8.py
+│
+└── paged_attention/             # PagedAttention算子实现
+    ├── __init__.py
+    ├── base.py
+    ├── fused_bnsd_impl.py
+    ├── fused_bsh_impl.py
+    └── original_impl.py
+```
+
+## 🚀 快速开始
+
+### 运行测试
+
+#### 1. 使用交互式脚本
+
+```bash
+./run_tests.sh
+```
+
+脚本会提供交互式菜单，选择要测试的算子和测试模式。
+
+#### 2. 直接运行特定算子测试
+
+```bash
+# Add算子综合测试
+python3 tests/test_add.py --mode comprehensive
+
+# 只测试精度
+python3 tests/test_add.py --mode accuracy
+
+# 只测试性能
+python3 tests/test_add.py --mode performance
+
+# 快速测试
+python3 tests/test_add.py --mode quick
+```
+
+#### 3. 其他算子测试
+
+```bash
+# PagedAttention算子测试
+python3 tests/test_paged_attention.py --mode comprehensive
+
+# GroupGemm算子测试
+python3 tests/test_groupgemm.py --mode performance
+
+# Linear算子测试
+python3 tests/test_linear.py --mode accuracy
+```
+
+## 📊 测试结果
+
+测试结果会保存在 `test_results/` 目录下，包含：
+
+- **JSON格式**: 详细的测试数据和指标
+- **CSV格式**: 便于分析的表格数据
+- **Profiler输出**: 性能分析文件（如果启用）
