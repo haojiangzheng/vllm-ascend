@@ -4,12 +4,14 @@
 """ 
 
 from .test_add import AddTestSuite 
+from .test_paged_attention import PagedAttentionTestSuite
 from .test_groupgemm import GroupGemmTestSuite
 from .test_linear import LinearTestSuite
 from .test_rmsnorm import RMSNormTestSuite
 
 __all__ = [ 
     'AddTestSuite', 
+    'PagedAttentionTestSuite',
     'GroupGemmTestSuite',
     'LinearTestSuite',
     'RMSNormTestSuite'
