@@ -8,11 +8,13 @@ from .test_paged_attention import PagedAttentionTestSuite
 from .test_groupgemm import GroupGemmTestSuite
 from .test_linear import LinearTestSuite
 from .test_rmsnorm import RMSNormTestSuite
+from .test_flash_attention import FlashAttentionTestSuite
 
 __all__ = [ 
     'AddTestSuite', 
     'PagedAttentionTestSuite',
     'GroupGemmTestSuite',
     'LinearTestSuite',
-    'RMSNormTestSuite'
- ]
+    'RMSNormTestSuite',
+    'FlashAttentionTestSuite'
+]
