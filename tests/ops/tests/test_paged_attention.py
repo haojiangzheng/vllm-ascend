@@ -215,6 +215,193 @@ class PagedAttentionTestSuite(BaseTestSuite):
             }
         ]
 
+    def run_latency_plot_test(
+        self,
+        seqlen_start: int = 1024,
+        seqlen_end: int = 32768,
+        seqlen_step: int = 1024,
+        batch_min: int = 1,
+        batch_max: int = 128,
+        num_warmup: int = 5,
+        num_iterations: int = 20
+    ):
+        try:
+            import matplotlib.pyplot as plt
+            import csv
+            import time
+        except ImportError:
+            print("❌ 未找到matplotlib，无法绘制曲线。请安装matplotlib: pip install matplotlib")
+            return
+
+        from operator_test_framework import PrecisionType
+
+        device = "npu:0"
+        precision_type = PrecisionType.BF16
+        implementations = self.operator_test.get_available_implementations(device)
+        if not implementations:
+            print("❌ 未找到可用的 PagedAttention 实现")
+            return
+
+        os.makedirs("test_results", exist_ok=True)
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+
+        seqlens = list(range(seqlen_start, seqlen_end + 1, seqlen_step))
+        if seqlens[-1] != seqlen_end:
+            seqlens.append(seqlen_end)
+
+        print(f"\n{'='*80}")
+        print("PagedAttention 延迟画图测试")
+        print(f"设备: {device}, 实现: {', '.join(implementations)}, 精度: {precision_type.name}")
+        print(f"{'='*80}")
+
+        seqlen_latency_ms = {impl: [] for impl in implementations}
+        seqlen_rows = []
+
+        print("\n📈 曲线1: batch=128, seqlen=1024..32768")
+        for impl in implementations:
+            print(f"\n  实现: {impl}")
+            for seq_len in seqlens:
+                try:
+                    test_data = self.operator_test.generate_test_data(
+                        batch_size=128,
+                        num_heads=8,
+                        num_kv_heads=1,
+                        head_size=128,
+                        max_seq_len=seq_len,
+                        num_blocks=10000,
+                        block_size=128,
+                    )
+                    result = self.framework.run_core_operator_performance_test_v2(
+                        operator_test=self.operator_test,
+                        data=test_data,
+                        device=device,
+                        precision=precision_type,
+                        implementation=impl,
+                        num_warmup=num_warmup,
+                        num_iterations=num_iterations
+                    )
+                    latency = result.avg_time_ms
+                except Exception as e:
+                    print(f"  ❌ {impl} seqlen={seq_len} 测试失败: {e}")
+                    latency = 0.0
+                seqlen_latency_ms[impl].append(latency)
+                seqlen_rows.append([impl, seq_len, latency])
+                print(f"  {impl} seqlen={seq_len:5d}, latency={latency:.4f} ms")
+
+        batch_sizes = list(range(batch_min, batch_max + 1))
+        batch_curve_seq_lens = [10000, 30000]
+        batch_latency_ms = {
+            impl: {fixed_seq: [] for fixed_seq in batch_curve_seq_lens}
+            for impl in implementations
+        }
+        batch_rows = []
+
+        print("\n📈 曲线2: batch=1..128, seqlen固定10k/30k")
+        for impl in implementations:
+            print(f"\n  实现: {impl}")
+            for fixed_seq in batch_curve_seq_lens:
+                print(f"\n  固定 seqlen={fixed_seq}")
+                for batch_size in batch_sizes:
+                    try:
+                        test_data = self.operator_test.generate_test_data(
+                            batch_size=batch_size,
+                            num_heads=8,
+                            num_kv_heads=1,
+                            head_size=128,
+                            max_seq_len=fixed_seq,
+                            num_blocks=10000,
+                            block_size=128,
+                        )
+                        result = self.framework.run_core_operator_performance_test_v2(
+                            operator_test=self.operator_test,
+                            data=test_data,
+                            device=device,
+                            precision=precision_type,
+                            implementation=impl,
+                            num_warmup=num_warmup,
+                            num_iterations=num_iterations
+                        )
+                        latency = result.avg_time_ms
+                    except Exception as e:
+                        print(f"    ❌ {impl} batch={batch_size} 测试失败: {e}")
+                        latency = 0.0
+                    batch_latency_ms[impl][fixed_seq].append(latency)
+                    batch_rows.append([impl, fixed_seq, batch_size, latency])
+                    print(f"    {impl} batch={batch_size:3d}, latency={latency:.4f} ms")
+
+        seqlen_csv = f"test_results/paged_attention_latency_vs_seqlen_{device.replace(':', '_')}_{timestamp}.csv"
+        batch_csv = f"test_results/paged_attention_latency_vs_batch_{device.replace(':', '_')}_{timestamp}.csv"
+        seqlen_plot = f"test_results/paged_attention_latency_vs_seqlen_{device.replace(':', '_')}_{timestamp}.png"
+        batch_plot = f"test_results/paged_attention_latency_vs_batch_{device.replace(':', '_')}_{timestamp}.png"
+
+        try:
+            with open(seqlen_csv, 'w', newline='') as f:
+                writer = csv.writer(f)
+                writer.writerow(['implementation', 'seq_len', 'latency_ms'])
+                writer.writerows(seqlen_rows)
+            print(f"\n✅ seqlen曲线数据已保存: {seqlen_csv}")
+        except Exception as e:
+            print(f"❌ 保存seqlen CSV失败: {e}")
+
+        try:
+            with open(batch_csv, 'w', newline='') as f:
+                writer = csv.writer(f)
+                writer.writerow(['implementation', 'seq_len_fixed', 'batch_size', 'latency_ms'])
+                writer.writerows(batch_rows)
+            print(f"✅ batch曲线数据已保存: {batch_csv}")
+        except Exception as e:
+            print(f"❌ 保存batch CSV失败: {e}")
+
+        try:
+            plt.figure(figsize=(12, 7))
+            markers = ['o', 's', '^', 'd', 'x', '*']
+            for idx, impl in enumerate(implementations):
+                marker = markers[idx % len(markers)]
+                plt.plot(seqlens, seqlen_latency_ms[impl], marker=marker, linewidth=2, markersize=4, label=impl)
+            plt.xlabel('Sequence Length')
+            plt.ylabel('Latency (ms)')
+            plt.title(f'PagedAttention Latency vs Sequence Length (batch=128, {device}, all implementations)')
+            plt.grid(True, which="both", ls="-", alpha=0.5)
+            plt.legend()
+            plt.savefig(seqlen_plot)
+            plt.close()
+            print(f"✅ seqlen曲线图已保存: {seqlen_plot}")
+        except Exception as e:
+            print(f"❌ 绘制seqlen曲线失败: {e}")
+
+        try:
+            plt.figure(figsize=(12, 7))
+            markers = ['o', 's', '^', 'd', 'x', '*']
+            for idx, impl in enumerate(implementations):
+                marker = markers[idx % len(markers)]
+                plt.plot(
+                    batch_sizes,
+                    batch_latency_ms[impl][10000],
+                    marker=marker,
+                    linewidth=2,
+                    markersize=4,
+                    label=f'{impl}, seqlen=10k'
+                )
+                plt.plot(
+                    batch_sizes,
+                    batch_latency_ms[impl][30000],
+                    marker=marker,
+                    linestyle='--',
+                    linewidth=2,
+                    markersize=4,
+                    label=f'{impl}, seqlen=30k'
+                )
+            plt.xlabel('Batch Size')
+            plt.ylabel('Latency (ms)')
+            plt.title(f'PagedAttention Latency vs Batch Size ({device}, all implementations)')
+            plt.grid(True, which="both", ls="-", alpha=0.5)
+            plt.legend()
+            plt.savefig(batch_plot)
+            plt.close()
+            print(f"✅ batch曲线图已保存: {batch_plot}")
+        except Exception as e:
+            print(f"❌ 绘制batch曲线失败: {e}")
+
 def main():
     """主函数 - 支持独立运行PagedAttention算子测试"""
     import argparse
@@ -230,7 +417,7 @@ def main():
     parser.add_argument(
         "--mode",
         type=str,
-        choices=["accuracy", "performance", "profile", "comprehensive", "fulltest"],
+        choices=["accuracy", "performance", "profile", "comprehensive", "fulltest", "latency"],
         default="comprehensive",
         help="测试模式 (默认: comprehensive)"
     )
@@ -271,6 +458,8 @@ def main():
         print(f"\n🎯 运行fulltest模式，生成 {len(full_test_cases)} 个随机测试案例")
         pa_suite.print_test_cases_summary(full_test_cases)
         results = pa_suite.run_accuracy_test(full_test_cases)
+    elif args.mode == "latency":
+        results = pa_suite.run_latency_plot_test()
     
     print(f"\n✓ PagedAttention算子测试完成，结果已保存到 {args.result_dir}")
 

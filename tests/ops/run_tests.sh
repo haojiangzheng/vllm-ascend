@@ -23,9 +23,10 @@ echo "2. 只测试PagedAttention算子"
 echo "3. 只测试GroupGemm算子"
 echo "4. 只测试Linear算子"
 echo "5. 只测试RMSNorm算子"
-echo "6. 列出所有已注册的算子"
+echo "6. 只测试FlashAttention算子"
+echo "7. 列出所有已注册的算子"
 
-read -p "请选择测试选项 (1-6): " choice
+read -p "请选择测试选项 (1-7): " choice
 
 case $choice in
     1)
@@ -53,7 +54,8 @@ case $choice in
         echo "c. 只测试性能"
         echo "d. Profile测试"
         echo "e. 全面随机测试(fulltest)"
-        read -p "请选择模式 (a-e): " pa_mode
+        echo "f. 延迟画图测试(latency)"
+        read -p "请选择模式 (a-f): " pa_mode
         
         case $pa_mode in
             a) python3 tests/test_paged_attention.py --mode comprehensive ;;
@@ -61,6 +63,7 @@ case $choice in
             c) python3 tests/test_paged_attention.py --mode performance ;;
             d) python3 tests/test_paged_attention.py --mode profile ;;
             e) python3 tests/test_paged_attention.py --mode fulltest ;;
+            f) python3 tests/test_paged_attention.py --mode latency ;;
             *) echo "无效选择"; exit 1 ;;
         esac
         ;;
@@ -125,6 +128,26 @@ case $choice in
          esac
          ;;
     6)
+        echo "选择FlashAttention算子测试模式:"
+        echo "a. 综合测试"
+        echo "b. 只测试精度"
+        echo "c. 只测试性能"
+        echo "d. Profile测试"
+        echo "e. TFLOPS测试 - FP16"
+        echo "f. TFLOPS测试 - BF16"
+        read -p "请选择模式 (a-f): " fa_mode
+        
+        case $fa_mode in
+            a) python3 tests/test_flash_attention.py --mode comprehensive ;;
+            b) python3 tests/test_flash_attention.py --mode accuracy ;;
+            c) python3 tests/test_flash_attention.py --mode performance ;;
+            d) python3 tests/test_flash_attention.py --mode profile ;;
+            e) python3 tests/test_flash_attention.py --mode tflops --precision fp16 ;;
+            f) python3 tests/test_flash_attention.py --mode tflops --precision bf16 ;;
+            *) echo "无效选择"; exit 1 ;;
+        esac
+        ;;
+    7)
         echo "列出所有已注册的算子..."
         python3 test_main.py --list
         ;;
