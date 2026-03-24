@@ -75,8 +75,10 @@ case $choice in
         echo "d. BF16 性能测试"
         echo "e. INT8 + NZ格式 Profile测试"
         echo "f. INT8 + NZ格式 性能测试"
-        read -p "请选择模式 (a-f): " gg_mode
-        
+        echo "g. TFLOPS测试 - INT8"
+        echo "h. TFLOPS测试 - BF16"
+        read -p "请选择模式 (a-h): " gg_mode
+
         case $gg_mode in
             a) python3 tests/test_groupgemm.py --precision int8 --mode profile ;;
             b) python3 tests/test_groupgemm.py --precision int8 --mode performance ;;
@@ -84,6 +86,8 @@ case $choice in
             d) python3 tests/test_groupgemm.py --precision bf16 --mode performance ;;
             e) python3 tests/test_groupgemm.py --precision int8 --use-nz-format --mode profile ;;
             f) python3 tests/test_groupgemm.py --precision int8 --use-nz-format --mode performance ;;
+            g) python3 tests/test_groupgemm.py --precision int8 --mode tflops ;;
+            h) python3 tests/test_groupgemm.py --precision bf16 --mode tflops ;;
             *) echo "无效选择"; exit 1 ;;
         esac
         ;;

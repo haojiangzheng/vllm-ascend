@@ -118,6 +118,158 @@ class GroupGemmTestSuite(BaseTestSuite):
             },
         ]
     
+    def run_tflops_test(self, seq_lens=None, num_experts=None, hidden_dim=None, out_channel=None):
+        """运行TFLOPS测试并绘制曲线
+
+        参考 Triton grouped_gemm tutorial 的 benchmark shape:
+        - 固定 num_experts(group_size), K(hidden_dim), N(out_channel)
+        - 变化 total_M(seq_len): 每个 expert 分到 seq_len/num_experts 个 token
+        - FLOPS = seq_len * hidden_dim * out_channel * 2
+        """
+        try:
+            import matplotlib.pyplot as plt
+            import csv
+            import time
+        except ImportError:
+            print("未找到matplotlib，无法绘制曲线。请安装matplotlib: pip install matplotlib")
+            return
+
+        import torch
+        try:
+            import torch_npu
+        except ImportError:
+            pass
+
+        from operator_test_framework import PrecisionType, DeviceType
+
+        # 参数默认值
+        if num_experts is None:
+            num_experts = self.num_experts
+        if hidden_dim is None:
+            hidden_dim = self.hidden_dim
+        if out_channel is None:
+            out_channel = self.out_channel
+
+        # 参考 Triton grouped_gemm tutorial 的 benchmark shape
+        # 总 M (seq_len) 从小到大变化，模拟不同 batch 下 MoE 的负载
+        if seq_lens is None:
+            seq_lens = [64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768]
+
+        # 确定设备
+        device = None
+        npu_available = False
+        try:
+            import torch_npu
+            npu_available = True
+        except ImportError:
+            pass
+
+        if npu_available:
+            device = "npu:0"
+        elif torch.cuda.is_available():
+            device = "cuda:0"
+        else:
+            device = "cpu"
+
+        # 确定精度类型
+        precision_map = {
+            "int8": PrecisionType.INT8,
+            "bf16": PrecisionType.BF16,
+        }
+        precision_type = precision_map.get(self.precision, PrecisionType.BF16)
+
+        print(f"\n{'='*80}")
+        print(f"GroupGemm TFLOPS 测试 ({device}) - Precision: {self.precision.upper()}")
+        print(f"  num_experts={num_experts}, K(hidden_dim)={hidden_dim}, N(out_channel)={out_channel}")
+        print(f"{'='*80}")
+
+        results = []
+        tflops_list = []
+
+        print(f"{'seq_len':>10} {'num_experts':>12} {'K(hidden)':>10} {'N(out)':>10} {'TFLOPS':>15}")
+
+        # Ensure test_results directory exists
+        os.makedirs("test_results", exist_ok=True)
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        csv_file = f"test_results/groupgemm_tflops_{self.precision}_{device.replace(':', '_')}_{timestamp}.csv"
+
+        for seq_len in seq_lens:
+            try:
+                # 生成测试数据
+                test_data = self.operator_test.generate_test_data(
+                    seq_len=seq_len,
+                    num_experts=num_experts,
+                    hidden_dim=hidden_dim,
+                    out_channel=out_channel
+                )
+
+                # 运行性能测试
+                result = self.framework.run_core_operator_performance_test_v2(
+                    operator_test=self.operator_test,
+                    data=test_data,
+                    device=device,
+                    precision=precision_type,
+                    implementation="npu_grouped_matmul",
+                    num_warmup=10,
+                    num_iterations=50
+                )
+
+                # 计算 TFLOPS
+                # throughput 是 GFLOPS -> / 1000 = TFLOPS
+                tflops = result.throughput / 1000.0 if result.throughput else 0.0
+
+                tflops_list.append(tflops)
+                results.append((seq_len, num_experts, hidden_dim, out_channel, tflops))
+
+                print(f"{seq_len:>10} {num_experts:>12} {hidden_dim:>10} {out_channel:>10} {tflops:15.4f}")
+
+            except Exception as e:
+                print(f"  测试失败 seq_len={seq_len}: {e}")
+                tflops_list.append(0.0)
+                results.append((seq_len, num_experts, hidden_dim, out_channel, 0.0))
+
+        # Save results to CSV
+        try:
+            with open(csv_file, 'w', newline='') as f:
+                writer = csv.writer(f)
+                writer.writerow(['seq_len', 'num_experts', 'hidden_dim', 'out_channel', 'TFLOPS'])
+                writer.writerows(results)
+            print(f"\n  测试结果已保存至 {csv_file}")
+        except Exception as e:
+            print(f"  保存CSV失败: {e}")
+
+        # 绘制曲线
+        try:
+            fig, ax = plt.subplots(figsize=(12, 7))
+
+            ax.plot(seq_lens, tflops_list, 'bo-', linewidth=2, markersize=6,
+                    label=f'GroupGemm ({self.precision.upper()})')
+
+            ax.set_xlabel('Total Tokens (seq_len = sum of M per expert)', fontsize=12)
+            ax.set_ylabel('TFLOPS', fontsize=12)
+            ax.set_title(
+                f'GroupGemm TFLOPS vs seq_len ({device}) - {self.precision.upper()}\n'
+                f'num_experts={num_experts}, K={hidden_dim}, N={out_channel}',
+                fontsize=13
+            )
+            ax.set_xscale('log', base=2)
+            ax.grid(True, which="both", ls="-", alpha=0.5)
+            ax.legend(fontsize=11)
+
+            # 添加数值标注
+            for i, (sl, tf) in enumerate(zip(seq_lens, tflops_list)):
+                ax.annotate(f'{tf:.2f}', (sl, tf), textcoords="offset points",
+                           xytext=(0, 12), ha='center', fontsize=8)
+
+            plt.tight_layout()
+            plot_file = f'test_results/groupgemm_tflops_curve_{self.precision}_{device.replace(":", "_")}_{timestamp}.png'
+            plt.savefig(plot_file, dpi=150)
+            print(f"  TFLOPS曲线已保存至 {plot_file}")
+            plt.close()
+
+        except Exception as e:
+            print(f"  绘图失败: {e}")
+
     def run_profile_test(self, test_cases: List[Dict[str, Any]] = None, num_iterations: int = 10):
         """运行 GroupGemm Profile 测试（使用基类增强版本）"""
         if test_cases is None:
@@ -164,9 +316,9 @@ def main():
     parser.add_argument(
         '--mode',
         type=str,
-        choices=['profile', 'performance'],
+        choices=['profile', 'performance', 'tflops'],
         default='profile',
-        help='测试模式: profile(Profile测试) 或 performance(性能测试)'
+        help='测试模式: profile(Profile测试), performance(性能测试), tflops(TFLOPS曲线测试)'
     )
     parser.add_argument('--seq-lens', type=str, help='序列长度列表，用逗号分隔 (例如: 2048,4096,8192)')
     
@@ -236,12 +388,25 @@ def main():
                 test_cases=test_cases,
                 precision_type=precision_type
             )
-            
+
             print(f"\n{'='*60}")
             print("✅ 性能测试完成！")
             print(f"📁 结果已保存到 test_results 目录")
             print(f"📊 成功测试: {results['summary']['successful_tests']}/{results['summary']['total_tests']}")
             print(f"{'='*60}")
+
+        elif args.mode == "tflops":
+            print("📈 运行 GroupGemm TFLOPS 测试...")
+            # 如果指定了自定义序列长度，则使用自定义的
+            custom_seq_lens = None
+            if args.seq_lens:
+                custom_seq_lens = [int(x.strip()) for x in args.seq_lens.split(',')]
+            test_suite.run_tflops_test(
+                seq_lens=custom_seq_lens,
+                num_experts=args.num_experts,
+                hidden_dim=args.hidden_dim,
+                out_channel=args.out_channel
+            )
         
     except Exception as e:
         print(f"❌ 测试过程中发生错误: {str(e)}")
